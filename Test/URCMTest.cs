@@ -21,6 +21,11 @@ public class URCMTest : MonoBehaviour
     // 测试 LruCache 的功能
     public void TestLruCache()
     {
+        
+    }
+
+    public void OnBtnPopTest()
+    {
         var cache = new LruCache<int>(3); // 设置容量为 3
 
         // 测试添加元素
@@ -49,5 +54,43 @@ public class URCMTest : MonoBehaviour
         cache.ForceClean();
         Debug.Log("Count after force cleaning: " + cache.Count); // 应该是 0
         Debug.Assert(cache.Count == 0, "Count should be 0");
+    }
+
+    public void OnBtnPressureTest()
+    {
+        var cache = new LruCache<int>(10); // 设置容量为 10
+        int totalItems = 100; // 总共要添加的对象数量
+        List<LruObj> addedObjects = new List<LruObj>();
+
+        // 添加对象
+        for (int i = 0; i < totalItems; i++)
+        {
+            var obj = new LruObj { Guid = i.ToString() };
+            cache.Put(i, obj);
+            Debug.Log($"Put {JsonUtility.ToJson(obj)}");
+            addedObjects.Add(obj);
+
+            // 每添加10个对象，获取一次第一个对象
+            if (i % 10 == 0 && i != 0)
+            {
+                Debug.Log($"=============={i}");
+                var retrievedObj = cache.Get(0);
+                Debug.Assert(retrievedObj == null, "Key为0的Obj应该已经被移除了！");
+            }
+
+            // 每添加20个对象，强制清理一次
+            if (i % 20 == 0)
+            {
+                Debug.Log($"========================================================{i}");
+                cache.ForceClean();
+                Debug.Log($"Count after force cleaning: {cache.Count}"); // 应该是 0
+                Debug.Assert(cache.Count == 0, "Count should be 0 after force cleaning");
+            }
+        }
+
+        // 确保缓存的行为符合预期
+        cache.ForceClean();
+        Debug.Log($"Final Count: {cache.Count}"); // 应该是 0
+        Debug.Assert(cache.Count == 0, "Final Count should be 0");
     }
 }
