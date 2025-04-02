@@ -1,217 +1,97 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using UnityEngine;
 using System.Threading.Tasks;
+using UnityEngine;
 using Object = UnityEngine.Object;
 
 /// <summary>
-/// Unity 资源引用计数管理器 (Unity Reference Count Manager)
-/// 负责管理资源的加载、缓存和卸载
+/// URCM - Unity 资源引用计数管理系统
+/// SDK入口类，提供简洁易用的资源管理API
 /// </summary>
-public class URCM : MonoBehaviour
+public static class URCM
 {
-    #region 单例实现
-    private static URCM _instance;
-    public static URCM Instance
-    {
-        get
-        {
-            if (_instance == null)
-            {
-                GameObject go = new GameObject("URCM");
-                _instance = go.AddComponent<URCM>();
-                DontDestroyOnLoad(go);
-            }
-            return _instance;
-        }
-    }
-    #endregion
+    #region 初始化与配置
 
-    #region 配置参数
-    private static bool _showLog = true;
-    private const int DEFAULT_CACHE_CAPACITY = 100;
-    private const float CLEAN_INTERVAL = 60f; // 自动清理的时间间隔（秒）
-    #endregion
-
-    #region 资源缓存
-    // 使用 LruCache 来管理资源缓存
-    private LruCache<string> _resourceCache;
-    
-    // 资源引用计数字典
-    private Dictionary<string, int> _referenceCountMap = new Dictionary<string, int>();
-    
-    // 正在加载的资源任务
-    private Dictionary<string, TaskCompletionSource<Object>> _loadingTasks = new Dictionary<string, TaskCompletionSource<Object>>();
-    #endregion
-
-    #region Unity 生命周期
-    private void Awake()
-    {
-        if (_instance != null && _instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        
-        _instance = this;
-        DontDestroyOnLoad(gameObject);
-        
-        InitializeCache();
-    }
-
-    private void Start()
-    {
-        // 启动自动清理协程
-        StartCoroutine(AutoCleanCoroutine());
-    }
-
-    private void OnDestroy()
-    {
-        // 清理所有资源
-        ReleaseAllResources();
-    }
-    #endregion
-
-    #region 初始化
-    private void InitializeCache()
-    {
-        // 使用优化后的 LruCache，启用调试日志
-        _resourceCache = new LruCache<string>(DEFAULT_CACHE_CAPACITY, _showLog);
-        _resourceCache.OnRemove = OnResourceRemoved;
-        Log("URCM initialized with cache capacity: " + DEFAULT_CACHE_CAPACITY);
-    }
-    #endregion
-
-    #region 公共 API
     /// <summary>
-    /// 同步加载资源并增加引用计数
+    /// 设置资源加载器
+    /// </summary>
+    /// <param name="operations">自定义的资源加载和释放操作实现</param>
+    /// <example>
+    /// <code>
+    /// // 使用Resources系统
+    /// URCM.SetAssetLoader(new ResourcesAssetOperations());
+    /// 
+    /// // 或使用Addressables系统
+    /// URCM.SetAssetLoader(new AddressablesAssetOperations());
+    /// </code>
+    /// </example>
+    public static void SetAssetLoader(IAssetOperations operations)
+    {
+        URCMCore.Instance.SetAssetOperations(operations);
+    }
+
+    /// <summary>
+    /// 检查URCM是否已正确初始化
+    /// </summary>
+    /// <returns>是否已设置资源加载器</returns>
+    public static bool IsInitialized()
+    {
+        // 这里我们假设URCMCore中会有IsAssetOperationsSet属性
+        // 如果URCMCore中没有，可以添加一个
+        return URCMCore.Instance != null && URCMCore.Instance.IsAssetOperationsSet;
+    }
+
+    /// <summary>
+    /// 设置缓存容量
+    /// </summary>
+    /// <param name="capacity">新的缓存容量</param>
+    public static void SetCacheCapacity(int capacity)
+    {
+        URCMCore.Instance.SetCacheCapacity(capacity);
+    }
+
+    /// <summary>
+    /// 启用或禁用日志
+    /// </summary>
+    /// <param name="enabled">是否启用日志</param>
+    public static void EnableLogging(bool enabled)
+    {
+        URCMCore.SetLogEnabled(enabled);
+    }
+
+    #endregion
+
+    #region 基础 API
+
+    /// <summary>
+    /// 同步加载资源，自动管理引用计数
     /// </summary>
     /// <typeparam name="T">资源类型</typeparam>
-    /// <param name="path">资源路径</param>
-    /// <returns>加载的资源</returns>
-    public T LoadAsset<T>(string path) where T : Object
+    /// <param name="path">资源路径 (解释由具体的IAssetOperations实现决定)</param>
+    /// <returns>加载的资源实例</returns>
+    public static T Load<T>(string path) where T : Object
     {
-        if (string.IsNullOrEmpty(path))
-        {
-            LogWarning("Cannot load asset with empty path");
-            return null;
-        }
-
-        // 增加引用计数
-        AddReference(path);
-
-        // 尝试从缓存获取
-        var lruObj = _resourceCache.Get(path);
-        if (lruObj != null && lruObj.Asset != null)
-        {
-            Log($"Hit cache for {path}");
-            return lruObj.Asset as T;
-        }
-
-        // 如果缓存中不存在，同步加载
-        T asset = Resources.Load<T>(path);
-        if (asset == null)
-        {
-            LogWarning($"Failed to load asset at path: {path}");
-            RemoveReference(path);
-            return null;
-        }
-
-        // 添加到缓存
-        AddToCache(path, asset);
-        
-        return asset;
+        return URCMCore.Instance.LoadAsset<T>(path);
     }
 
     /// <summary>
-    /// 异步加载资源并增加引用计数
+    /// 异步加载资源，自动管理引用计数
     /// </summary>
     /// <typeparam name="T">资源类型</typeparam>
-    /// <param name="path">资源路径</param>
-    /// <returns>异步加载的资源任务</returns>
-    public async Task<T> LoadAssetAsync<T>(string path) where T : Object
+    /// <param name="path">资源路径 (解释由具体的IAssetOperations实现决定)</param>
+    /// <returns>表示异步操作的任务</returns>
+    public static Task<T> LoadAsync<T>(string path) where T : Object
     {
-        if (string.IsNullOrEmpty(path))
-        {
-            LogWarning("Cannot load asset with empty path");
-            return null;
-        }
-
-        // 增加引用计数
-        AddReference(path);
-
-        // 尝试从缓存获取
-        var lruObj = _resourceCache.Get(path);
-        if (lruObj != null && lruObj.Asset != null)
-        {
-            Log($"Hit cache for {path}");
-            return lruObj.Asset as T;
-        }
-
-        // 如果已经有相同路径的加载任务在进行中，等待该任务完成
-        if (_loadingTasks.TryGetValue(path, out var existingTask))
-        {
-            try
-            {
-                var result = await existingTask.Task;
-                return result as T;
-            }
-            catch
-            {
-                LogWarning($"Failed to await existing loading task for {path}");
-                RemoveReference(path);
-                return null;
-            }
-        }
-
-        // 创建新的加载任务
-        var tcs = new TaskCompletionSource<Object>();
-        _loadingTasks[path] = tcs;
-
-        try
-        {
-            // 启动异步加载
-            ResourceRequest request = Resources.LoadAsync<T>(path);
-            
-            // 等待加载完成
-            while (!request.isDone)
-            {
-                await Task.Yield();
-            }
-
-            if (request.asset == null)
-            {
-                throw new Exception($"Failed to load asset at path: {path}");
-            }
-
-            // 添加到缓存
-            AddToCache(path, request.asset);
-            
-            // 完成任务
-            tcs.SetResult(request.asset);
-            _loadingTasks.Remove(path);
-            
-            return request.asset as T;
-        }
-        catch (Exception e)
-        {
-            LogWarning($"Error loading asset at path {path}: {e.Message}");
-            tcs.SetException(e);
-            _loadingTasks.Remove(path);
-            RemoveReference(path);
-            return null;
-        }
+        return URCMCore.Instance.LoadAssetAsync<T>(path);
     }
 
     /// <summary>
-    /// 获取资源的当前引用计数
+    /// 释放资源，减少引用计数
     /// </summary>
     /// <param name="path">资源路径</param>
-    /// <returns>引用计数</returns>
-    public int GetReferenceCount(string path)
+    public static void Release(string path)
     {
-        return _referenceCountMap.TryGetValue(path, out int count) ? count : 0;
+        URCMCore.Instance.ReleaseAsset(path);
     }
 
     /// <summary>
@@ -219,18 +99,9 @@ public class URCM : MonoBehaviour
     /// </summary>
     /// <param name="path">资源路径</param>
     /// <returns>新的引用计数</returns>
-    public int AddReference(string path)
+    public static int AddRef(string path)
     {
-        if (!_referenceCountMap.TryGetValue(path, out int count))
-        {
-            count = 0;
-        }
-        
-        count++;
-        _referenceCountMap[path] = count;
-        Log($"Added reference to {path}, new count: {count}");
-        
-        return count;
+        return URCMCore.Instance.AddReference(path);
     }
 
     /// <summary>
@@ -238,231 +109,210 @@ public class URCM : MonoBehaviour
     /// </summary>
     /// <param name="path">资源路径</param>
     /// <returns>新的引用计数</returns>
-    public int RemoveReference(string path)
+    public static int RemoveRef(string path)
     {
-        if (!_referenceCountMap.TryGetValue(path, out int count))
-        {
-            return 0;
-        }
-        
-        count--;
-        
-        if (count <= 0)
-        {
-            count = 0;
-            _referenceCountMap.Remove(path);
-            Log($"Reference count for {path} reached zero, marked for potential unload");
-            
-            // 获取缓存对象并标记为可释放
-            var lruObj = _resourceCache.Get(path);
-            if (lruObj != null)
-            {
-                lruObj.KeepInCache = false;
-            }
-        }
-        else
-        {
-            _referenceCountMap[path] = count;
-        }
-        
-        Log($"Removed reference from {path}, new count: {count}");
-        return count;
+        return URCMCore.Instance.RemoveReference(path);
     }
 
     /// <summary>
-    /// 释放指定资源
+    /// 获取资源的当前引用计数
     /// </summary>
     /// <param name="path">资源路径</param>
-    public void ReleaseAsset(string path)
+    /// <returns>引用计数</returns>
+    public static int GetRefCount(string path)
     {
-        RemoveReference(path);
-        
-        // 如果引用计数为0，尝试立即从缓存中移除
-        if (GetReferenceCount(path) <= 0)
-        {
-            var lruObj = _resourceCache.Get(path);
-            if (lruObj != null)
-            {
-                lruObj.KeepInCache = false;
-                // 执行资源清理
-                OnResourceRemoved(lruObj);
-                
-                // 使用优化后的 Remove 方法直接从缓存中移除
-                _resourceCache.Remove(path);
-            }
-        }
+        return URCMCore.Instance.GetReferenceCount(path);
     }
 
-    /// <summary>
-    /// 设置缓存容量
-    /// </summary>
-    /// <param name="capacity">新的缓存容量</param>
-    public void SetCacheCapacity(int capacity)
-    {
-        if (capacity <= 0)
-        {
-            LogWarning("Cache capacity must be greater than zero");
-            return;
-        }
-        
-        _resourceCache.Capacity = capacity;
-        Log($"Cache capacity set to {capacity}");
-    }
-
-    /// <summary>
-    /// 清理缓存中未使用的资源
-    /// </summary>
-    public void CleanUnusedResources()
-    {
-        Log("Starting cleanup of unused resources");
-        
-        // 标记所有引用计数为0的资源为可释放
-        var cachedKeys = new List<string>();
-        
-        // 使用 Contains 方法检查键是否存在于缓存中
-        foreach (var path in _referenceCountMap.Keys)
-        {
-            if (_resourceCache.Contains(path))
-            {
-                cachedKeys.Add(path);
-            }
-        }
-        
-        foreach (var path in cachedKeys)
-        {
-            if (GetReferenceCount(path) <= 0)
-            {
-                var lruObj = _resourceCache.Get(path);
-                if (lruObj != null)
-                {
-                    lruObj.KeepInCache = false;
-                }
-            }
-        }
-        
-        // 执行清理
-        _resourceCache.Clean();
-        
-        // 输出缓存统计信息
-        Log(_resourceCache.GetStatistics());
-    }
-    
     /// <summary>
     /// 释放所有资源
     /// </summary>
-    public void ReleaseAllResources()
+    public static void ReleaseAll()
     {
-        Log("Releasing all resources");
-        _resourceCache.ForceClean();
-        _referenceCountMap.Clear();
+        URCMCore.Instance.ReleaseAllResources();
     }
-    
+
+    #endregion
+
+    #region 批量操作 API
+
+    /// <summary>
+    /// 批量加载资源
+    /// </summary>
+    /// <typeparam name="T">资源类型</typeparam>
+    /// <param name="paths">资源路径列表</param>
+    /// <returns>加载的资源字典</returns>
+    public static Dictionary<string, T> LoadMultiple<T>(IEnumerable<string> paths) where T : Object
+    {
+        var result = new Dictionary<string, T>();
+        foreach (var path in paths)
+        {
+            var asset = Load<T>(path);
+            if (asset != null)
+            {
+                result[path] = asset;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 异步批量加载资源
+    /// </summary>
+    /// <typeparam name="T">资源类型</typeparam>
+    /// <param name="paths">资源路径列表</param>
+    /// <returns>表示批量加载操作的任务</returns>
+    public static async Task<Dictionary<string, T>> LoadMultipleAsync<T>(IEnumerable<string> paths) where T : Object
+    {
+        var tasks = new Dictionary<string, Task<T>>();
+        var result = new Dictionary<string, T>();
+
+        // 启动所有异步加载任务
+        foreach (var path in paths)
+        {
+            tasks[path] = LoadAsync<T>(path);
+        }
+
+        // 等待所有任务完成
+        foreach (var entry in tasks)
+        {
+            try
+            {
+                var asset = await entry.Value;
+                if (asset != null)
+                {
+                    result[entry.Key] = asset;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Error loading asset at {entry.Key}: {ex.Message}");
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 批量释放资源
+    /// </summary>
+    /// <param name="paths">资源路径列表</param>
+    public static void ReleaseMultiple(IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            Release(path);
+        }
+    }
+
+    #endregion
+
+    #region 预制体实例化 API
+
+    /// <summary>
+    /// 加载预制体并实例化
+    /// </summary>
+    /// <param name="path">预制体路径</param>
+    /// <param name="parent">父对象</param>
+    /// <returns>实例化的游戏对象</returns>
+    public static GameObject Instantiate(string path, Transform parent = null)
+    {
+        var prefab = Load<GameObject>(path);
+        if (prefab == null) return null;
+        
+        var instance = UnityEngine.Object.Instantiate(prefab, parent);
+        
+        // 可以在实例上附加组件，自动处理prefab的引用计数
+        var refTracker = instance.AddComponent<URCMRefTracker>();
+        refTracker.Initialize(path);
+        
+        return instance;
+    }
+
+    /// <summary>
+    /// 异步加载预制体并实例化
+    /// </summary>
+    /// <param name="path">预制体路径</param>
+    /// <param name="parent">父对象</param>
+    /// <returns>表示实例化操作的任务</returns>
+    public static async Task<GameObject> InstantiateAsync(string path, Transform parent = null)
+    {
+        var prefab = await LoadAsync<GameObject>(path);
+        if (prefab == null) return null;
+        
+        var instance = UnityEngine.Object.Instantiate(prefab, parent);
+        
+        // 可以在实例上附加组件，自动处理prefab的引用计数
+        var refTracker = instance.AddComponent<URCMRefTracker>();
+        refTracker.Initialize(path);
+        
+        return instance;
+    }
+
+    #endregion
+
+    #region 管理 API
+
+    /// <summary>
+    /// 清理未使用的资源
+    /// </summary>
+    public static void CleanUnused()
+    {
+        URCMCore.Instance.CleanUnusedResources();
+    }
+
     /// <summary>
     /// 获取缓存统计信息
     /// </summary>
-    /// <returns>缓存统计信息</returns>
-    public string GetCacheStatistics()
+    public static string GetCacheStats()
     {
-        return _resourceCache.GetStatistics();
+        return URCMCore.Instance.GetCacheStatistics();
     }
-    
+
     /// <summary>
-    /// 重置缓存统计数据
+    /// 重置缓存统计
     /// </summary>
-    public void ResetCacheStatistics()
+    public static void ResetCacheStats()
     {
-        _resourceCache.ResetStatistics();
-        Log("Cache statistics reset");
+        URCMCore.Instance.ResetCacheStatistics();
     }
+
     #endregion
 
-    #region 内部方法
-    private void AddToCache(string path, Object asset)
+    #region 测试辅助方法
+
+    /// <summary>
+    /// 仅用于测试：获取指定路径的 LruObj 对象
+    /// 注意：此方法仅用于测试目的，不应在生产代码中使用
+    /// </summary>
+    /// <param name="path">资源路径</param>
+    /// <returns>缓存中的 LruObj 对象，如果不存在则返回 null</returns>
+    public static LruObj GetLruObj(string path)
     {
-        var lruObj = new LruObj 
-        { 
-            FullPath = path,
-            Guid = Guid.NewGuid().ToString(),
-            KeepInCache = true,
-            Asset = asset
-        };
-        
-        _resourceCache.Put(path, lruObj);
-        Log($"Added to cache: {path}");
+        return URCMCore.Instance.GetLruObj(path);
     }
 
-    private bool OnResourceRemoved(LruObj obj)
+    #endregion
+}
+
+/// <summary>
+/// 用于自动跟踪和管理实例化预制体的引用计数
+/// </summary>
+public class URCMRefTracker : MonoBehaviour
+{
+    private string _resourcePath;
+    
+    public void Initialize(string path)
     {
-        if (obj == null)
-        {
-            return true;
-        }
-        
-        // 如果引用计数大于0，不应该被移除
-        if (GetReferenceCount(obj.FullPath) > 0)
-        {
-            Log($"Prevented unloading of {obj.FullPath} because reference count > 0");
-            return false;
-        }
-        
-        // 执行卸载
-        if (obj.Asset != null)
-        {
-            Log($"Unloading asset: {obj.FullPath}");
-            
-            // 处理子资源
-            foreach (var childObj in obj.ChildReses)
-            {
-                OnResourceRemoved(childObj);
-            }
-            
-            // 调用OnDestroy回调
-            if (obj.OnDestroy != null)
-            {
-                bool canDestroy = obj.OnDestroy.Invoke(obj);
-                if (!canDestroy)
-                {
-                    return false;
-                }
-            }
-            
-            // 卸载资源
-            Resources.UnloadAsset(obj.Asset);
-            obj.Asset = null;
-            
-            // 标记为已释放
-            obj.HasReleased = true;
-        }
-        
-        return true;
+        _resourcePath = path;
     }
     
-    private IEnumerator AutoCleanCoroutine()
+    private void OnDestroy()
     {
-        while (true)
+        // 当GameObject被销毁时，自动减少引用计数
+        if (!string.IsNullOrEmpty(_resourcePath))
         {
-            yield return new WaitForSeconds(CLEAN_INTERVAL);
-            CleanUnusedResources();
+            URCM.RemoveRef(_resourcePath);
         }
     }
-    #endregion
-
-    #region 日志方法
-    public static void Log(string message)
-    {
-        if(!_showLog) return;
-        Debug.Log($"URCM: {message}");
-    }
-
-    public static void LogWarning(string message)
-    {
-        if(!_showLog) return;
-        Debug.LogWarning($"URCM: {message}");
-    }
-
-    public static void SetLogEnabled(bool enabled)
-    {
-        _showLog = enabled;
-    }
-    #endregion
 }

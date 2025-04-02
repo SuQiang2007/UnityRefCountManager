@@ -8,7 +8,6 @@ public class LruObj
     public bool KeepInCache;
     public string Guid = System.Guid.NewGuid().ToString();
     public bool HasReleased = false;
-    public bool HasAdded = false;
     
     // 添加 Asset 字段来存储实际的资源引用
     public Object Asset;
